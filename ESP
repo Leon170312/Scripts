@@ -1,0 +1,80 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local localPlayer = Players.LocalPlayer  -- Get the local player
+
+-- Function to apply ESP to a player's character
+local function applyESPToCharacter(character)
+    if character and character:FindFirstChild("HumanoidRootPart") then
+        local highlight = character:FindFirstChildOfClass("Highlight")
+        if not highlight then
+            highlight = Instance.new("Highlight")
+            highlight.Adornee = character
+            highlight.Parent = character
+            highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        end
+    end
+end
+
+-- Function to handle ESP for a player
+local function handlePlayerESP(player)
+    if player == localPlayer then return end -- Exclude the local player
+
+    player.CharacterAdded:Connect(function(character)
+        wait(0.1) -- Wait for the character to fully load
+        applyESPToCharacter(character)
+    end)
+
+    -- Apply ESP if the character already exists
+    if player.Character then
+        applyESPToCharacter(player.Character)
+    end
+end
+
+-- Function to refresh ESP for all players
+local function refreshESP()
+    for _, player in ipairs(Players:GetPlayers()) do
+        handlePlayerESP(player)
+    end
+end
+
+-- Remove existing highlights from a player's character
+local function clearHighlights(player)
+    if player.Character then
+        for _, child in ipairs(player.Character:GetChildren()) do
+            if child:IsA("Highlight") then
+                child:Destroy()
+            end
+        end
+    end
+end
+
+-- Event handlers for player added and removed
+local function onPlayerAdded(player)
+    handlePlayerESP(player)
+end
+
+local function onPlayerRemoving(player)
+    clearHighlights(player)
+end
+
+-- Connect events
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(onPlayerRemoving)
+
+-- Initial setup
+refreshESP()
+
+-- Optional: RunService can monitor the health of players to refresh on death
+RunService.Heartbeat:Connect(function()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character and player.Character:FindFirstChild("Humanoid") then
+            if player.Character.Humanoid.Health <= 0 then
+                clearHighlights(player)
+                if player ~= localPlayer then  -- Exclude the local player
+                    applyESPToCharacter(player.Character)
+                end
+            end
+        end
+    end
+end)
