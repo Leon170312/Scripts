@@ -1,17 +1,26 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local localPlayer = Players.LocalPlayer  -- Get the local player
+local ESPEnabled = true  -- Toggle flag for ESP activation
 
 -- Function to apply ESP to a player's character
 local function applyESPToCharacter(character)
-    if character and character:FindFirstChild("HumanoidRootPart") then
+    if ESPEnabled and character and character:FindFirstChild("HumanoidRootPart") then
         local highlight = character:FindFirstChildOfClass("Highlight")
         if not highlight then
             highlight = Instance.new("Highlight")
             highlight.Adornee = character
             highlight.Parent = character
             highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        end
+    elseif not ESPEnabled then
+        -- Remove existing highlights if ESP is disabled
+        for _, child in ipairs(character:GetChildren()) do
+            if child:IsA("Highlight") then
+                child:Destroy()
+            end
         end
     end
 end
@@ -58,11 +67,32 @@ local function onPlayerRemoving(player)
     clearHighlights(player)
 end
 
--- Connect events
-Players.PlayerAdded:Connect(onPlayerAdded)
-Players.PlayerRemoving:Connect(onPlayerRemoving)
+-- Function to toggle ESP activation
+local function toggleESP()
+    ESPEnabled = not ESPEnabled
+    if ESPEnabled then
+        print("ESP Activated")
+        refreshESP()
+    else
+        print("ESP Deactivated")
+        -- Remove all highlights when ESP is turned off
+        for _, player in ipairs(Players:GetPlayers()) do
+            clearHighlights(player)
+        end
+    end
+end
+
+-- Listen for Ctrl + K input
+UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+    if gameProcessedEvent then return end  -- Ignore if the game is processing input
+    if input.KeyCode == Enum.KeyCode.K and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        toggleESP()
+    end
+end)
 
 -- Initial setup
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(onPlayerRemoving)
 refreshESP()
 
 -- Optional: RunService can monitor the health of players to refresh on death
@@ -71,7 +101,7 @@ RunService.Heartbeat:Connect(function()
         if player.Character and player.Character:FindFirstChild("Humanoid") then
             if player.Character.Humanoid.Health <= 0 then
                 clearHighlights(player)
-                if player ~= localPlayer then  -- Exclude the local player
+                if ESPEnabled and player ~= localPlayer then  -- Exclude the local player
                     applyESPToCharacter(player.Character)
                 end
             end
