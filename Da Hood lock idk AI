@@ -1,0 +1,265 @@
+local Camera = workspace.CurrentCamera
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+
+local PREDICTION_TIME = 0.08
+local SMOOTHNESS = 0.55
+local MOUSE_PULL = 0.35
+local MOUSE_PULL_MAX = 40
+local FOV_RADIUS = 90
+local TEAM_CHECK = false
+
+local LocalPlayer = Players.LocalPlayer
+local ScriptActive = true
+local Holding = false
+local CurrentTarget = nil
+_G.AimbotEnabled = true
+local PlayerVelocities = {}
+local Connections = {}
+
+local moveRel
+do
+    local function try(fn)
+        local ok, v = pcall(fn)
+        return (ok and type(v) == "function") and v or nil
+    end
+    moveRel = try(function() return getgenv and getgenv().mousemoverel end)
+           or try(function() return syn and syn.mouse_moverel end)
+           or try(function() return mouse and mouse.move end)
+           or try(function() return mousemoverel end)
+end
+
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Thickness = 2
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+FOVCircle.Transparency = 0.6
+FOVCircle.Filled = false
+FOVCircle.NumSides = 100
+FOVCircle.Visible = true
+
+local function SetCircleColor(locked)
+    FOVCircle.Color = locked and Color3.fromRGB(0, 255, 100) or Color3.fromRGB(255, 255, 255)
+end
+
+local function SafeNotify(title, text, duration)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = duration or 2,
+        })
+    end)
+end
+
+local function GetTargetPart(character)
+    return character:FindFirstChild("HumanoidRootPart")
+        or character:FindFirstChild("Head")
+        or character:FindFirstChild("UpperTorso")
+        or character:FindFirstChild("Torso")
+end
+
+local function IsTeammate(player)
+    if not TEAM_CHECK then return false end
+    return player.Team ~= nil and player.Team == LocalPlayer.Team
+end
+
+local function GetPredictedPosition(player, targetPart)
+    PlayerVelocities[player] = PlayerVelocities[player] or Vector3.new()
+    local root = (targetPart.Parent and targetPart.Parent:FindFirstChild("HumanoidRootPart")) or targetPart
+    local vel = root.AssemblyLinearVelocity or root.Velocity or Vector3.new()
+    PlayerVelocities[player] = PlayerVelocities[player]:Lerp(vel, 0.28)
+    return targetPart.Position + PlayerVelocities[player] * PREDICTION_TIME
+end
+
+local function GetClosestPlayer(mousePos)
+    local bestDist = FOV_RADIUS
+    local bestPlayer = nil
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if IsTeammate(player) then continue end
+        local char = player.Character
+        if not char then continue end
+        local targetPart = GetTargetPart(char)
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if not targetPart or not humanoid or humanoid.Health <= 0 then continue end
+        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+        if not onScreen then continue end
+        local toTarget = (targetPart.Position - Camera.CFrame.Position).Unit
+        if Camera.CFrame.LookVector:Dot(toTarget) <= 0.03 then continue end
+        local dist = (mousePos - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+        if dist < bestDist then
+            bestDist = dist
+            bestPlayer = player
+        end
+    end
+    return bestPlayer
+end
+
+local function AutoUnlock(reason)
+    Holding = false
+    CurrentTarget = nil
+    SetCircleColor(false)
+    SafeNotify("Aimbot", reason, 2)
+    print("[Aimbot] Unlocked:", reason)
+end
+
+Connections.PlayerLeave = Players.PlayerRemoving:Connect(function(player)
+    PlayerVelocities[player] = nil
+end)
+
+Connections.Input = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed or not ScriptActive then return end
+
+    if input.KeyCode == Enum.KeyCode.E then
+        if not _G.AimbotEnabled then
+            SafeNotify("Aimbot", "Enable aimbot first (E)", 2)
+            return
+        end
+        if Holding then
+            AutoUnlock("Manually unlocked")
+        else
+            local mousePos = UserInputService:GetMouseLocation()
+            CurrentTarget = GetClosestPlayer(mousePos)
+            if CurrentTarget then
+                Holding = true
+                SetCircleColor(true)
+                print("[Aimbot] Locked →", CurrentTarget.Name)
+            else
+                SafeNotify("Aimbot", "No target in FOV — aim closer", 2)
+                print("[Aimbot] No target found in FOV circle")
+            end
+        end
+
+    elseif input.KeyCode == Enum.KeyCode.Tab then
+        _G.AimbotEnabled = not _G.AimbotEnabled
+        SafeNotify("Aimbot", _G.AimbotEnabled and "Enabled" or "Disabled", 1.5)
+        print("[Aimbot] Toggled:", _G.AimbotEnabled)
+        if not _G.AimbotEnabled and Holding then
+            AutoUnlock("Disabled")
+        end
+
+    elseif input.KeyCode == Enum.KeyCode.P then
+        ScriptActive = false
+        for _, conn in pairs(Connections) do
+            pcall(function() conn:Disconnect() end)
+        end
+        Connections = {}
+        pcall(function() if _G.AimbotGui then _G.AimbotGui:Destroy() end end)
+        pcall(function() FOVCircle:Remove() end)
+        PlayerVelocities = {}
+        print("[Aimbot] Destroyed — fully unloaded")
+    end
+end)
+
+Connections.Render = RunService.RenderStepped:Connect(function(dt)
+    if not ScriptActive then return end
+
+    local mousePos = UserInputService:GetMouseLocation()
+    FOVCircle.Position = mousePos
+    FOVCircle.Radius = FOV_RADIUS
+    FOVCircle.Visible = _G.AimbotEnabled
+
+    if not Holding or not _G.AimbotEnabled or not CurrentTarget then return end
+
+    local char = CurrentTarget.Character
+    local rootPart = char and GetTargetPart(char)
+
+    if not char or not rootPart or not rootPart:IsDescendantOf(char) then
+        AutoUnlock("Target respawned or left")
+        return
+    end
+
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then
+        AutoUnlock("Target died")
+        return
+    end
+
+    local predictedPos = GetPredictedPosition(CurrentTarget, rootPart)
+
+    pcall(function()
+        local targetCFrame = CFrame.lookAt(Camera.CFrame.Position, predictedPos)
+        Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, SMOOTHNESS)
+    end)
+
+    if moveRel then
+        local screenPos = Camera:WorldToViewportPoint(predictedPos)
+        local rawX = (screenPos.X - mousePos.X) * MOUSE_PULL
+        local rawY = (screenPos.Y - mousePos.Y) * MOUSE_PULL
+        local len = math.sqrt(rawX * rawX + rawY * rawY)
+        if len > MOUSE_PULL_MAX then
+            local s = MOUSE_PULL_MAX / len
+            rawX = rawX * s
+            rawY = rawY * s
+        end
+        pcall(moveRel, rawX, rawY)
+    end
+end)
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "AimbotGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+_G.AimbotGui = ScreenGui
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 340, 0, 46)
+Frame.Position = UDim2.new(0, 14, 0, 14)
+Frame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+Frame.BackgroundTransparency = 0.25
+Frame.BorderSizePixel = 0
+Frame.Parent = ScreenGui
+Instance.new("UICorner", Frame).CornerRadius = UDim.new(0, 8)
+
+local Stroke = Instance.new("UIStroke", Frame)
+Stroke.Color = Color3.fromRGB(255, 255, 255)
+Stroke.Transparency = 0.8
+Stroke.Thickness = 1
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, -12, 1, 0)
+StatusLabel.Position = UDim2.new(0, 6, 0, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.TextColor3 = Color3.new(1, 1, 1)
+StatusLabel.TextScaled = true
+StatusLabel.Font = Enum.Font.GothamBold
+StatusLabel.Text = "Aimbot READY  |  E=Lock  Tab=Toggle  P=Quit"
+StatusLabel.Parent = Frame
+
+local StatusTimer = 0
+local lastStatus = ""
+
+Connections.Status = RunService.Heartbeat:Connect(function(dt)
+    if not ScriptActive then return end
+    StatusTimer = StatusTimer + dt
+    if StatusTimer < 0.1 then return end
+    StatusTimer = 0
+
+    local status = Holding and "LOCKED" or (_G.AimbotEnabled and "READY" or "OFF")
+    local targetName = CurrentTarget and CurrentTarget.Name or "—"
+    local newText = string.format("Aimbot: %s  |  Target: %s  |  FOV: %d", status, targetName, FOV_RADIUS)
+
+    if newText ~= lastStatus then
+        lastStatus = newText
+        StatusLabel.Text = newText
+    end
+
+    if Holding then
+        StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 110)
+        Stroke.Color = Color3.fromRGB(0, 255, 110)
+        Stroke.Transparency = 0.45
+    elseif not _G.AimbotEnabled then
+        StatusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+        Stroke.Color = Color3.fromRGB(255, 80, 80)
+        Stroke.Transparency = 0.45
+    else
+        StatusLabel.TextColor3 = Color3.new(1, 1, 1)
+        Stroke.Color = Color3.new(1, 1, 1)
+        Stroke.Transparency = 0.8
+    end
+end)
+
+print("[Aimbot] Loaded  |  Mouse API:", moveRel and "OK" or "NOT FOUND — cursor lock disabled")
+print("[Aimbot] E=lock  Tab=toggle  P=destroy")
